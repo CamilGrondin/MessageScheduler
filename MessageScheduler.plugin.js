@@ -3,6 +3,8 @@
  * @author camilgrondin
  * @description Schedule one or more messages after X minutes or at HH:MM.
  * @version 0.1.0
+ * @source https://github.com/CamilGrondin/MessageScheduler
+ * @updateUrl https://raw.githubusercontent.com/CamilGrondin/MessageScheduler/main/MessageScheduler.plugin.js
  */
 
 module.exports = class MessageScheduler {
@@ -26,31 +28,66 @@ module.exports = class MessageScheduler {
 
         this.queue = [];
         this.timers = new Map();
+        this.countdownTimer = null;
         this.menuObserver = null;
         this.menuScanTimeout = null;
         this.activeChannelId = "";
         this.lastScheduleValue = "";
+        this.editingScheduleId = "";
+
+        // Webpack module cache for performance
+        this._messageActionsCache = null;
+        this._channelStoreCache = null;
+        this._selectedChannelStoreCache = null;
     }
 
     start() {
-        this.queue = this.loadQueue();
-        this.injectCSS();
-        this.restoreTimers();
-        this.observeAttachmentMenus();
-        this.scanForAttachmentMenus();
+        try {
+            this.cacheWebpackModules();
+            this.queue = this.loadQueue();
+            this.injectCSS();
+            this.restoreTimers();
+            this.startCountdownTicker();
+            this.observeAttachmentMenus();
+            this.scanForAttachmentMenus();
+        } catch (error) {
+            this.Logger?.error?.("Failed to start plugin:", error);
+        }
     }
 
     stop() {
-        this.disconnectAttachmentObserver();
-        this.clearAttachmentMenuScan();
-        this.removeInjectedAttachmentMenuItems();
-        this.clearAllTimers();
-        this.closeSchedulerModal(true);
-        this.removeCSS();
+        try {
+            this.disconnectAttachmentObserver();
+            this.clearAttachmentMenuScan();
+            this.removeInjectedAttachmentMenuItems();
+            this.clearAllTimers();
+            this.stopCountdownTicker();
+            this.closeSchedulerModal(true);
+            this.removeCSS();
+            this.clearWebpackCache();
+        } catch (error) {
+            this.Logger?.error?.("Failed to stop plugin:", error);
+        }
     }
 
     getMountNode() {
         return document.getElementById("app-mount") || document.body || document.documentElement;
+    }
+
+    cacheWebpackModules() {
+        try {
+            this._messageActionsCache = this.Webpack?.getByKeys?.("sendMessage", "editMessage") || null;
+            this._channelStoreCache = this.Webpack?.getStore?.("ChannelStore") || null;
+            this._selectedChannelStoreCache = this.Webpack?.getStore?.("SelectedChannelStore") || null;
+        } catch (error) {
+            this.Logger?.warn?.("Failed to cache webpack modules:", error);
+        }
+    }
+
+    clearWebpackCache() {
+        this._messageActionsCache = null;
+        this._channelStoreCache = null;
+        this._selectedChannelStoreCache = null;
     }
 
     injectCSS() {
@@ -197,6 +234,9 @@ module.exports = class MessageScheduler {
             #message-scheduler-modal .ms-input,
             #message-scheduler-modal .ms-textarea {
                 width: 100%;
+                box-sizing: border-box;
+                display: block;
+                max-width: 100%;
                 background: rgba(0, 0, 0, 0.18);
                 border: 1px solid rgba(255, 255, 255, 0.08);
                 color: var(--text-normal, #dbdee1);
@@ -216,6 +256,9 @@ module.exports = class MessageScheduler {
                 min-height: 140px;
                 resize: vertical;
                 line-height: 1.45;
+                overflow: auto;
+                white-space: pre-wrap;
+                overflow-wrap: anywhere;
             }
             #message-scheduler-modal .ms-help {
                 font-size: 12px;
@@ -293,6 +336,8 @@ module.exports = class MessageScheduler {
                 align-items: center;
                 gap: 8px;
                 flex: 0 0 auto;
+                flex-wrap: wrap;
+                justify-content: flex-end;
             }
             #message-scheduler-modal .ms-scheduled-pill {
                 display: inline-flex;
@@ -306,6 +351,35 @@ module.exports = class MessageScheduler {
                 font-size: 12px;
                 font-weight: 600;
                 white-space: nowrap;
+            }
+            #message-scheduler-modal .ms-scheduled-countdown {
+                display: inline-flex;
+                align-items: center;
+                min-height: 26px;
+                padding: 0 10px;
+                border-radius: 999px;
+                background: rgba(255, 255, 255, 0.05);
+                border: 1px solid rgba(255, 255, 255, 0.08);
+                color: var(--text-normal, #dbdee1);
+                font-size: 12px;
+                font-weight: 600;
+                white-space: nowrap;
+            }
+            #message-scheduler-modal .ms-scheduled-edit {
+                border: 1px solid rgba(88, 101, 242, 0.22);
+                background: rgba(88, 101, 242, 0.12);
+                color: #dfe4ff;
+                cursor: pointer;
+                font-size: 12px;
+                font-weight: 600;
+                padding: 6px 10px;
+                border-radius: 10px;
+                transition: background 0.15s ease, color 0.15s ease, transform 0.15s ease;
+            }
+            #message-scheduler-modal .ms-scheduled-edit:hover {
+                background: rgba(88, 101, 242, 0.18);
+                color: #ffffff;
+                transform: translateY(-1px);
             }
             #message-scheduler-modal .ms-scheduled-cancel {
                 border: 1px solid rgba(255, 255, 255, 0.08);
@@ -413,17 +487,23 @@ module.exports = class MessageScheduler {
 
     observeAttachmentMenus() {
         if (!document.body) {
+            this.Logger?.warn?.("Document body not available for observation");
             return;
         }
 
         this.disconnectAttachmentObserver();
-        this.menuObserver = new MutationObserver(() => {
-            this.scheduleAttachmentMenuScan();
-        });
-        this.menuObserver.observe(document.body, {
-            childList: true,
-            subtree: true
-        });
+
+        try {
+            this.menuObserver = new MutationObserver(() => {
+                this.scheduleAttachmentMenuScan();
+            });
+            this.menuObserver.observe(document.body, {
+                childList: true,
+                subtree: true
+            });
+        } catch (error) {
+            this.Logger?.error?.("Failed to set up mutation observer:", error);
+        }
     }
 
     disconnectAttachmentObserver() {
@@ -565,9 +645,10 @@ module.exports = class MessageScheduler {
         menuRoot.appendChild(menuItem);
         menuRoot.dataset.msMenuHost = "1";
 
+        // Register cleanup callback to prevent memory leaks
         if (typeof BdApi?.DOM?.onRemoved === "function") {
             BdApi.DOM.onRemoved(menuItem, () => {
-                if (!menuItem.isConnected && menuRoot.dataset.msMenuHost === "1") {
+                if (menuRoot && menuRoot.isConnected && menuRoot.dataset.msMenuHost === "1") {
                     delete menuRoot.dataset.msMenuHost;
                 }
             });
@@ -605,6 +686,7 @@ module.exports = class MessageScheduler {
         const openScheduler = event => {
             event.preventDefault();
             event.stopPropagation();
+            this.closeDiscordAttachmentMenu();
             this.closeInjectedAttachmentMenus();
             this.openSchedulerModal({ channelId: this.getCurrentChannelId() });
         };
@@ -637,9 +719,35 @@ module.exports = class MessageScheduler {
         this.closeInjectedAttachmentMenus();
     }
 
+    closeDiscordAttachmentMenu() {
+        // Close Discord's attachment menu by finding and clicking backdrop or pressing Escape
+        try {
+            const dialogBackdrops = document.querySelectorAll('[role="dialog"], [aria-modal="true"]');
+            for (const backdrop of dialogBackdrops) {
+                if (backdrop === document.getElementById(this.modalId)) continue;
+                if (backdrop.dataset.msMenuHost === "1") continue;
+                if (backdrop.isConnected) {
+                    const event = new KeyboardEvent("keydown", {
+                        key: "Escape",
+                        code: "Escape",
+                        keyCode: 27,
+                        which: 27,
+                        bubbles: true,
+                        cancelable: true
+                    });
+                    backdrop.dispatchEvent(event);
+                    break;
+                }
+            }
+        } catch (error) {
+            this.Logger?.warn?.("Failed to close Discord menu:", error);
+        }
+    }
+
     openSchedulerModal({ channelId } = {}) {
         const resolvedChannelId = channelId || this.getCurrentChannelId();
         if (!resolvedChannelId) {
+            this.Logger?.warn?.("Cannot open modal: no channel selected");
             this.UI?.showToast?.("Impossible de trouver le canal.", { type: "error" });
             return;
         }
@@ -649,16 +757,27 @@ module.exports = class MessageScheduler {
     }
 
     closeSchedulerModal(skipRender = false) {
-        const modal = document.getElementById(this.modalId);
-        if (modal) modal.remove();
+        try {
+            const modal = document.getElementById(this.modalId);
+            if (modal && modal.isConnected) {
+                modal.remove();
+            }
+        } catch (error) {
+            this.Logger?.warn?.("Error closing modal:", error);
+        }
+
         if (!skipRender) {
             this.activeChannelId = "";
+            this.editingScheduleId = "";
         }
     }
 
     renderSchedulerModal() {
         const mountNode = this.getMountNode();
-        if (!mountNode) return;
+        if (!mountNode) {
+            this.Logger?.warn?.("Cannot render modal: mount node not found");
+            return;
+        }
 
         let modal = document.getElementById(this.modalId);
         const isNew = !modal;
@@ -670,13 +789,22 @@ module.exports = class MessageScheduler {
 
         modal.setAttribute("data-ms-backdrop", "");
 
-        modal.innerHTML = this.getModalMarkup();
+        try {
+            modal.innerHTML = this.getModalMarkup();
+        } catch (error) {
+            this.Logger?.error?.("Failed to render modal markup:", error);
+            return;
+        }
 
         if (isNew) {
             mountNode.appendChild(modal);
         }
 
-        this.bindModalEvents(modal);
+        try {
+            this.bindModalEvents(modal);
+        } catch (error) {
+            this.Logger?.error?.("Failed to bind modal events:", error);
+        }
 
         const messageField = modal.querySelector("#ms-message");
         if (messageField && typeof messageField.focus === "function") {
@@ -686,7 +814,12 @@ module.exports = class MessageScheduler {
 
     getModalMarkup() {
         const channelLabel = this.escapeHtml(this.getChannelLabel(this.activeChannelId));
-        const scheduleValue = this.escapeHtml(this.lastScheduleValue || "");
+        const isEditing = Boolean(this.editingScheduleId);
+        const modalTitle = isEditing ? "Modifier le message programmé" : "Programmer un message";
+        const actionLabel = isEditing ? "Mettre à jour" : "Programmer";
+        const editingItem = isEditing ? this.queue.find(entry => entry.id === this.editingScheduleId) : null;
+        const messageValue = this.escapeHtml(editingItem ? editingItem.messages.join("\n---\n") : "");
+        const scheduleValue = this.escapeHtml(editingItem ? (editingItem.scheduleInput || editingItem.scheduleLabel || "") : (this.lastScheduleValue || ""));
 
         return `
             <div class="ms-modal-dialog" role="dialog" aria-modal="true" aria-labelledby="ms-modal-title">
@@ -694,7 +827,7 @@ module.exports = class MessageScheduler {
                     <div class="ms-modal-heading">
                         <div class="ms-modal-kicker">Planification</div>
                         <div class="ms-modal-title-row">
-                            <div class="ms-modal-title" id="ms-modal-title">Programmer un message</div>
+                            <div class="ms-modal-title" id="ms-modal-title">${modalTitle}</div>
                             <span class="ms-modal-chip">${channelLabel}</span>
                         </div>
                         <div class="ms-modal-subtitle">Ajoute un ou plusieurs messages, puis choisis un délai ou une heure precise.</div>
@@ -707,7 +840,7 @@ module.exports = class MessageScheduler {
                             <span class="ms-section-title">Messages</span>
                             <span class="ms-section-hint">Sépare les blocs avec ---</span>
                         </div>
-                        <textarea id="ms-message" class="ms-textarea" placeholder="Message 1\n---\nMessage 2"></textarea>
+                        <textarea id="ms-message" class="ms-textarea" placeholder="Message 1\n---\nMessage 2">${messageValue}</textarea>
                         <div class="ms-help">Chaque bloc partira comme un message distinct.</div>
                     </section>
                     <section class="ms-section">
@@ -730,7 +863,7 @@ module.exports = class MessageScheduler {
                 </div>
                 <div class="ms-modal-footer">
                     <button class="ms-btn ms-btn-secondary" type="button" data-ms-cancel>Annuler</button>
-                    <button class="ms-btn ms-btn-primary" type="button" data-ms-schedule>Programmer</button>
+                    <button class="ms-btn ms-btn-primary" type="button" data-ms-schedule>${actionLabel}</button>
                 </div>
             </div>
         `;
@@ -766,6 +899,17 @@ module.exports = class MessageScheduler {
     }
 
     bindScheduledListEvents(modal) {
+        const editButtons = modal.querySelectorAll("[data-ms-edit-id]");
+        editButtons.forEach(button => {
+            button.addEventListener("click", event => {
+                event.preventDefault();
+                const itemId = button.getAttribute("data-ms-edit-id");
+                if (itemId) {
+                    this.beginScheduleEdit(itemId, modal);
+                }
+            });
+        });
+
         const cancelButtons = modal.querySelectorAll("[data-ms-cancel-id]");
         cancelButtons.forEach(button => {
             button.addEventListener("click", event => {
@@ -779,41 +923,78 @@ module.exports = class MessageScheduler {
     }
 
     handleSchedule(modal) {
-        const messageField = modal.querySelector("#ms-message");
-        const scheduleField = modal.querySelector("#ms-schedule");
+        try {
+            const messageField = modal.querySelector("#ms-message");
+            const scheduleField = modal.querySelector("#ms-schedule");
 
-        const messages = this.parseMessages(messageField?.value || "");
-        if (!messages.length) {
-            this.UI?.showToast?.("Ajoute au moins un message.", { type: "error" });
-            return;
+            const messages = this.parseMessages(messageField?.value || "");
+            if (!messages.length) {
+                this.UI?.showToast?.("Ajoute au moins un message.", { type: "error" });
+                return;
+            }
+
+            const scheduleValue = this.cleanText(scheduleField?.value || "");
+            const scheduleInfo = this.parseSchedule(scheduleValue);
+            if (!scheduleInfo) {
+                this.UI?.showToast?.("Indique un delai en minutes ou une heure (20:30).", { type: "error" });
+                return;
+            }
+
+            const channelId = this.activeChannelId || this.getCurrentChannelId();
+            if (!channelId) {
+                this.Logger?.warn?.("No channel ID available for scheduling");
+                this.UI?.showToast?.("Impossible de trouver le canal.", { type: "error" });
+                return;
+            }
+
+            const wasEditing = Boolean(this.editingScheduleId);
+            let savedItem = null;
+
+            if (wasEditing) {
+                const existingIndex = this.queue.findIndex(entry => entry.id === this.editingScheduleId);
+                if (existingIndex >= 0) {
+                    const existingItem = this.queue[existingIndex];
+                    this.clearScheduleTimer(existingItem.id);
+                    this.queue[existingIndex] = {
+                        ...existingItem,
+                        channelId,
+                        messages,
+                        dueAt: scheduleInfo.dueAt,
+                        scheduleLabel: scheduleInfo.label,
+                        scheduleInput: scheduleValue,
+                        updatedAt: Date.now()
+                    };
+                    savedItem = this.queue[existingIndex];
+                    this.scheduleTimer(savedItem);
+                }
+            } else {
+                savedItem = this.createScheduleItem(channelId, messages, scheduleInfo, scheduleValue);
+                this.queue.push(savedItem);
+                this.scheduleTimer(savedItem);
+            }
+
+            if (!savedItem) {
+                savedItem = this.createScheduleItem(channelId, messages, scheduleInfo, scheduleValue);
+                this.queue.push(savedItem);
+                this.scheduleTimer(savedItem);
+            }
+
+            this.saveQueue();
+
+            this.lastScheduleValue = scheduleValue;
+            this.editingScheduleId = "";
+
+            if (messageField) {
+                messageField.value = "";
+            }
+
+            this.refreshScheduledList(modal);
+            this.renderSchedulerModal();
+            this.UI?.showToast?.(wasEditing ? "Message programmé mis à jour." : `Message programme ${scheduleInfo.label}.`, { type: "success" });
+        } catch (error) {
+            this.Logger?.error?.("Error in handleSchedule:", error);
+            this.UI?.showToast?.("Erreur lors de la programmation du message.", { type: "error" });
         }
-
-        const scheduleValue = this.cleanText(scheduleField?.value || "");
-        const scheduleInfo = this.parseSchedule(scheduleValue);
-        if (!scheduleInfo) {
-            this.UI?.showToast?.("Indique un delai en minutes ou une heure (20:30).", { type: "error" });
-            return;
-        }
-
-        const channelId = this.activeChannelId || this.getCurrentChannelId();
-        if (!channelId) {
-            this.UI?.showToast?.("Impossible de trouver le canal.", { type: "error" });
-            return;
-        }
-
-        const item = this.createScheduleItem(channelId, messages, scheduleInfo);
-        this.queue.push(item);
-        this.saveQueue();
-        this.scheduleTimer(item);
-
-        this.lastScheduleValue = scheduleValue;
-
-        if (messageField) {
-            messageField.value = "";
-        }
-
-        this.refreshScheduledList(modal);
-        this.UI?.showToast?.(`Message programme ${scheduleInfo.label}.`, { type: "success" });
     }
 
     refreshScheduledList(modal) {
@@ -835,6 +1016,7 @@ module.exports = class MessageScheduler {
             const messageCount = item.messages.length;
             const scheduleLabel = this.escapeHtml(this.getScheduleLabel(item));
             const shortTime = this.escapeHtml(this.formatTime(item.dueAt));
+            const countdownLabel = this.escapeHtml(this.getCountdownLabel(item.dueAt));
             return `
                 <div class="ms-scheduled-row">
                     <div class="ms-scheduled-main">
@@ -842,7 +1024,9 @@ module.exports = class MessageScheduler {
                         <div class="ms-scheduled-meta">${channelLabel} · ${messageCount} message(s)</div>
                     </div>
                     <div class="ms-scheduled-actions">
+                        <span class="ms-scheduled-countdown" data-ms-countdown-id="${this.escapeHtml(item.id)}">${countdownLabel}</span>
                         <span class="ms-scheduled-pill">${shortTime}</span>
+                        <button class="ms-scheduled-edit" type="button" data-ms-edit-id="${this.escapeHtml(item.id)}">Modifier</button>
                         <button class="ms-scheduled-cancel" type="button" data-ms-cancel-id="${this.escapeHtml(item.id)}">Annuler</button>
                     </div>
                 </div>
@@ -865,13 +1049,88 @@ module.exports = class MessageScheduler {
         return `${hours}:${minutes}`;
     }
 
-    createScheduleItem(channelId, messages, scheduleInfo) {
+    getCountdownLabel(timestamp) {
+        const remainingMs = timestamp - Date.now();
+        if (remainingMs <= 0) {
+            return "En attente";
+        }
+
+        const totalSeconds = Math.ceil(remainingMs / 1000);
+        const hours = Math.floor(totalSeconds / 3600);
+        const minutes = Math.floor((totalSeconds % 3600) / 60);
+        const seconds = totalSeconds % 60;
+
+        if (hours > 0) {
+            return `${hours}h ${String(minutes).padStart(2, "0")}m`;
+        }
+
+        if (minutes > 0) {
+            return `${minutes}m ${String(seconds).padStart(2, "0")}s`;
+        }
+
+        return `${seconds}s`;
+    }
+
+    startCountdownTicker() {
+        this.stopCountdownTicker();
+        this.countdownTimer = window.setInterval(() => {
+            this.updateCountdownLabels();
+        }, 1000);
+        this.updateCountdownLabels();
+    }
+
+    stopCountdownTicker() {
+        if (this.countdownTimer) {
+            window.clearInterval(this.countdownTimer);
+            this.countdownTimer = null;
+        }
+    }
+
+    updateCountdownLabels() {
+        const modal = document.getElementById(this.modalId);
+        // Only update if modal exists and is connected to DOM
+        if (!modal || !modal.isConnected) return;
+
+        const rows = modal.querySelectorAll("[data-ms-countdown-id]");
+        rows.forEach(row => {
+            if (!(row instanceof HTMLElement)) return;
+
+            const itemId = row.getAttribute("data-ms-countdown-id");
+            if (!itemId) return;
+
+            const item = this.queue.find(entry => entry.id === itemId);
+            if (!item) return;
+
+            row.textContent = this.getCountdownLabel(item.dueAt);
+        });
+    }
+
+    beginScheduleEdit(itemId, modal) {
+        const item = this.queue.find(entry => entry.id === itemId);
+        if (!item) return;
+
+        this.editingScheduleId = itemId;
+        this.lastScheduleValue = item.scheduleInput || item.scheduleLabel || this.lastScheduleValue;
+
+        this.renderSchedulerModal();
+    }
+
+    clearScheduleTimer(itemId) {
+        const timer = this.timers.get(itemId);
+        if (timer) {
+            clearTimeout(timer);
+        }
+        this.timers.delete(itemId);
+    }
+
+    createScheduleItem(channelId, messages, scheduleInfo, scheduleInput = "") {
         return {
             id: this.createId(),
             channelId,
             messages,
             dueAt: scheduleInfo.dueAt,
             scheduleLabel: scheduleInfo.label,
+            scheduleInput: this.cleanText(scheduleInput),
             createdAt: Date.now()
         };
     }
@@ -886,7 +1145,10 @@ module.exports = class MessageScheduler {
 
         if (/^\d+$/.test(cleanedValue)) {
             const delayMinutes = Number.parseInt(cleanedValue, 10);
-            if (!Number.isFinite(delayMinutes) || delayMinutes <= 0) return null;
+            // Validate: must be positive and reasonable (max 10 years worth of minutes)
+            if (!Number.isFinite(delayMinutes) || delayMinutes <= 0 || delayMinutes > 5256000) {
+                return null;
+            }
 
             return {
                 type: "delay",
@@ -974,13 +1236,15 @@ module.exports = class MessageScheduler {
     normalizeItem(item) {
         if (!item || typeof item !== "object") return null;
 
-        const channelId = typeof item.channelId === "string" ? item.channelId : "";
+        const channelId = typeof item.channelId === "string" ? item.channelId.trim() : "";
         const messages = Array.isArray(item.messages)
             ? item.messages.map(message => this.cleanText(message)).filter(Boolean)
             : [];
         const dueAt = Number(item.dueAt);
 
-        if (!channelId || !messages.length || !Number.isFinite(dueAt)) return null;
+        if (!channelId || !messages.length || !Number.isFinite(dueAt) || dueAt <= 0) {
+            return null;
+        }
 
         return {
             id: typeof item.id === "string" ? item.id : this.createId(),
@@ -988,6 +1252,7 @@ module.exports = class MessageScheduler {
             messages,
             dueAt,
             scheduleLabel: typeof item.scheduleLabel === "string" ? item.scheduleLabel : "",
+            scheduleInput: typeof item.scheduleInput === "string" ? item.scheduleInput : "",
             createdAt: Number(item.createdAt) || Date.now()
         };
     }
@@ -1007,55 +1272,97 @@ module.exports = class MessageScheduler {
     }
 
     scheduleTimer(item) {
+        if (!item || !item.id) {
+            this.Logger?.warn?.("Cannot schedule timer: invalid item");
+            return;
+        }
+
         const delayMs = Math.max(0, item.dueAt - Date.now());
-        const timerId = window.setTimeout(() => {
-            void this.executeSchedule(item.id);
-        }, delayMs);
-        this.timers.set(item.id, timerId);
+
+        try {
+            const timerId = window.setTimeout(() => {
+                void this.executeSchedule(item.id);
+            }, delayMs);
+            this.timers.set(item.id, timerId);
+        } catch (error) {
+            this.Logger?.error?.("Failed to schedule timer:", error);
+        }
     }
 
     async executeSchedule(itemId) {
         const item = this.queue.find(entry => entry.id === itemId);
-        if (!item) return;
-
-        const sent = await this.sendMessages(item.messages, item.channelId);
-        if (!sent) {
-            this.UI?.showToast?.("Echec de l envoi des messages programmes.", { type: "error" });
+        if (!item) {
+            this.Logger?.warn?.(`Schedule item not found: ${itemId}`);
+            return;
         }
 
-        this.removeSchedule(itemId);
+        try {
+            const sent = await this.sendMessages(item.messages, item.channelId);
+            if (!sent) {
+                this.Logger?.error?.(`Failed to send scheduled messages for item: ${itemId}`);
+                this.UI?.showToast?.("Echec de l envoi des messages programmes.", { type: "error" });
+            } else {
+                this.Logger?.log?.(`Successfully sent scheduled messages for item: ${itemId}`);
+            }
+        } catch (error) {
+            this.Logger?.error?.("Error executing schedule:", error);
+            this.UI?.showToast?.("Erreur lors de l envoi des messages.", { type: "error" });
+        } finally {
+            this.removeSchedule(itemId);
+        }
     }
 
     removeSchedule(itemId) {
-        const timer = this.timers.get(itemId);
-        if (timer) clearTimeout(timer);
-        this.timers.delete(itemId);
+        if (!itemId) {
+            this.Logger?.warn?.("Cannot remove schedule: invalid itemId");
+            return;
+        }
 
-        this.queue = this.queue.filter(item => item.id !== itemId);
-        this.saveQueue();
+        try {
+            this.clearScheduleTimer(itemId);
 
-        const modal = document.getElementById(this.modalId);
-        if (modal) {
-            this.refreshScheduledList(modal);
+            this.queue = this.queue.filter(item => item.id !== itemId);
+            this.saveQueue();
+
+            if (this.editingScheduleId === itemId) {
+                this.editingScheduleId = "";
+            }
+
+            const modal = document.getElementById(this.modalId);
+            if (modal) {
+                this.refreshScheduledList(modal);
+            }
+        } catch (error) {
+            this.Logger?.error?.("Error removing schedule:", error);
         }
     }
 
     async sendMessages(messages, channelId) {
-        for (const message of messages) {
-            const chunks = this.splitMessageForDiscord(message);
-            for (let index = 0; index < chunks.length; index += 1) {
-                const ok = this.sendMessageViaDiscordApi(chunks[index], channelId);
-                if (!ok) return false;
-
-                if (index < chunks.length - 1) {
-                    await this.pause(180);
-                }
-            }
-
-            await this.pause(240);
+        if (!Array.isArray(messages) || !channelId) {
+            this.Logger?.warn?.("Invalid messages or channelId");
+            return false;
         }
 
-        return true;
+        try {
+            for (const message of messages) {
+                const chunks = this.splitMessageForDiscord(message);
+                for (let index = 0; index < chunks.length; index += 1) {
+                    const ok = this.sendMessageViaDiscordApi(chunks[index], channelId);
+                    if (!ok) return false;
+
+                    if (index < chunks.length - 1) {
+                        await this.pause(180);
+                    }
+                }
+
+                await this.pause(240);
+            }
+
+            return true;
+        } catch (error) {
+            this.Logger?.error?.("Error sending messages:", error);
+            return false;
+        }
     }
 
     splitMessageForDiscord(message, maxLength = 2000) {
@@ -1086,16 +1393,15 @@ module.exports = class MessageScheduler {
     }
 
     getMessageActions() {
-        try {
-            return this.Webpack?.getByKeys?.("sendMessage", "editMessage") || null;
-        } catch {
-            return null;
-        }
+        return this._messageActionsCache;
     }
 
     sendMessageViaDiscordApi(message, channelId) {
         const actions = this.getMessageActions();
-        if (!actions || typeof actions.sendMessage !== "function" || !channelId) return false;
+        if (!actions || typeof actions.sendMessage !== "function" || !channelId) {
+            this.Logger?.warn?.("Cannot send message: missing actions or invalid channelId");
+            return false;
+        }
 
         try {
             actions.sendMessage(channelId, {
@@ -1105,16 +1411,18 @@ module.exports = class MessageScheduler {
                 validNonShortcutEmojis: []
             }, true, {});
             return true;
-        } catch {
+        } catch (error) {
+            this.Logger?.error?.("Failed to send message:", error);
             return false;
         }
     }
 
     getCurrentChannelId() {
         try {
-            const store = this.Webpack?.getStore?.("SelectedChannelStore");
+            const store = this._selectedChannelStoreCache;
             return store?.getChannelId?.() || store?.getCurrentlySelectedChannelId?.() || "";
-        } catch {
+        } catch (error) {
+            this.Logger?.warn?.("Failed to get channel ID:", error);
             return "";
         }
     }
@@ -1122,12 +1430,13 @@ module.exports = class MessageScheduler {
     getChannelLabel(channelId) {
         if (!channelId) return "Canal inconnu";
         try {
-            const store = this.Webpack?.getStore?.("ChannelStore");
+            const store = this._channelStoreCache;
             const channel = store?.getChannel?.(channelId);
             if (!channel) return `Canal ${channelId}`;
             const name = channel?.name ? `#${channel.name}` : "DM";
             return name;
-        } catch {
+        } catch (error) {
+            this.Logger?.warn?.("Failed to get channel label:", error);
             return `Canal ${channelId}`;
         }
     }
