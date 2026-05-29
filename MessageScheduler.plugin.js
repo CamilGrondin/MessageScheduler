@@ -91,6 +91,7 @@ module.exports = class MessageScheduler {
     }
 
     injectCSS() {
+        // Inline CSS keeps the plugin single-file for BetterDiscord.
         const css = `
             #message-scheduler-modal {
                 position: fixed;
@@ -529,6 +530,7 @@ module.exports = class MessageScheduler {
     }
 
     scanForAttachmentMenus() {
+        // Heuristic: find attachment menus by matching known built-in labels.
         const candidates = Array.from(document.querySelectorAll('[role="dialog"], [aria-modal="true"], [role="menu"]'));
 
         for (const candidate of candidates) {
@@ -662,7 +664,7 @@ module.exports = class MessageScheduler {
         item.type = "button";
         item.className = "ms-attachment-menu-item";
         item.setAttribute("role", "menuitem");
-        item.setAttribute("aria-label", "Programmer un message");
+        item.setAttribute("aria-label", "Schedule a message");
         item.dataset.msMenuItem = "1";
 
         const icon = document.createElement("span");
@@ -674,11 +676,11 @@ module.exports = class MessageScheduler {
 
         const label = document.createElement("span");
         label.className = "ms-attachment-menu-label";
-        label.textContent = "Programmer un message";
+        label.textContent = "Schedule a message";
 
         const subtext = document.createElement("span");
         subtext.className = "ms-attachment-menu-subtext";
-        subtext.textContent = "Dans x min ou à xx:xx";
+        subtext.textContent = "After X min or at HH:MM";
 
         content.append(label, subtext);
         item.append(icon, content);
@@ -748,7 +750,7 @@ module.exports = class MessageScheduler {
         const resolvedChannelId = channelId || this.getCurrentChannelId();
         if (!resolvedChannelId) {
             this.Logger?.warn?.("Cannot open modal: no channel selected");
-            this.UI?.showToast?.("Impossible de trouver le canal.", { type: "error" });
+            this.UI?.showToast?.("Unable to find the channel.", { type: "error" });
             return;
         }
 
@@ -815,8 +817,8 @@ module.exports = class MessageScheduler {
     getModalMarkup() {
         const channelLabel = this.escapeHtml(this.getChannelLabel(this.activeChannelId));
         const isEditing = Boolean(this.editingScheduleId);
-        const modalTitle = isEditing ? "Modifier le message programmé" : "Programmer un message";
-        const actionLabel = isEditing ? "Mettre à jour" : "Programmer";
+        const modalTitle = isEditing ? "Edit scheduled message" : "Schedule a message";
+        const actionLabel = isEditing ? "Update" : "Schedule";
         const editingItem = isEditing ? this.queue.find(entry => entry.id === this.editingScheduleId) : null;
         const messageValue = this.escapeHtml(editingItem ? editingItem.messages.join("\n---\n") : "");
         const scheduleValue = this.escapeHtml(editingItem ? (editingItem.scheduleInput || editingItem.scheduleLabel || "") : (this.lastScheduleValue || ""));
@@ -825,12 +827,12 @@ module.exports = class MessageScheduler {
             <div class="ms-modal-dialog" role="dialog" aria-modal="true" aria-labelledby="ms-modal-title">
                 <div class="ms-modal-header">
                     <div class="ms-modal-heading">
-                        <div class="ms-modal-kicker">Planification</div>
+                        <div class="ms-modal-kicker">Scheduling</div>
                         <div class="ms-modal-title-row">
                             <div class="ms-modal-title" id="ms-modal-title">${modalTitle}</div>
                             <span class="ms-modal-chip">${channelLabel}</span>
                         </div>
-                        <div class="ms-modal-subtitle">Ajoute un ou plusieurs messages, puis choisis un délai ou une heure precise.</div>
+                        <div class="ms-modal-subtitle">Write your message(s), then set a delay or time.</div>
                     </div>
                     <button class="ms-modal-close" type="button" data-ms-close aria-label="Close">x</button>
                 </div>
@@ -838,23 +840,23 @@ module.exports = class MessageScheduler {
                     <section class="ms-section">
                         <div class="ms-section-header">
                             <span class="ms-section-title">Messages</span>
-                            <span class="ms-section-hint">Sépare les blocs avec ---</span>
+                            <span class="ms-section-hint">Separate blocks with ---</span>
                         </div>
                         <textarea id="ms-message" class="ms-textarea" placeholder="Message 1\n---\nMessage 2">${messageValue}</textarea>
-                        <div class="ms-help">Chaque bloc partira comme un message distinct.</div>
+                        <div class="ms-help">Each block is sent as its own message.</div>
                     </section>
                     <section class="ms-section">
                         <div class="ms-section-header">
-                            <span class="ms-section-title">Programmation</span>
-                            <span class="ms-section-hint">Minutes ou heure locale</span>
+                            <span class="ms-section-title">Timing</span>
+                            <span class="ms-section-hint">Minutes or local time (HH:MM)</span>
                         </div>
-                        <input id="ms-schedule" class="ms-input" placeholder="15 ou 20:30" value="${scheduleValue}" />
-                        <div class="ms-help">Exemples: 15 ou 20:30</div>
+                        <input id="ms-schedule" class="ms-input" placeholder="15 or 20:30" value="${scheduleValue}" />
+                        <div class="ms-help">Example: 15 or 20:30</div>
                     </section>
                     <section class="ms-section">
                         <div class="ms-section-header">
-                            <span class="ms-section-title">Messages programmés</span>
-                            <span class="ms-section-hint">${this.queue.length} en attente</span>
+                            <span class="ms-section-title">Scheduled messages</span>
+                            <span class="ms-section-hint">${this.queue.length} pending</span>
                         </div>
                         <div class="ms-scheduled-list" data-ms-scheduled-list>
                             ${this.getScheduledListMarkup()}
@@ -862,7 +864,7 @@ module.exports = class MessageScheduler {
                     </section>
                 </div>
                 <div class="ms-modal-footer">
-                    <button class="ms-btn ms-btn-secondary" type="button" data-ms-cancel>Annuler</button>
+                    <button class="ms-btn ms-btn-secondary" type="button" data-ms-cancel>Cancel</button>
                     <button class="ms-btn ms-btn-primary" type="button" data-ms-schedule>${actionLabel}</button>
                 </div>
             </div>
@@ -929,21 +931,21 @@ module.exports = class MessageScheduler {
 
             const messages = this.parseMessages(messageField?.value || "");
             if (!messages.length) {
-                this.UI?.showToast?.("Ajoute au moins un message.", { type: "error" });
+                this.UI?.showToast?.("Add at least one message.", { type: "error" });
                 return;
             }
 
             const scheduleValue = this.cleanText(scheduleField?.value || "");
             const scheduleInfo = this.parseSchedule(scheduleValue);
             if (!scheduleInfo) {
-                this.UI?.showToast?.("Indique un delai en minutes ou une heure (20:30).", { type: "error" });
+                this.UI?.showToast?.("Enter a delay in minutes or a time (20:30).", { type: "error" });
                 return;
             }
 
             const channelId = this.activeChannelId || this.getCurrentChannelId();
             if (!channelId) {
                 this.Logger?.warn?.("No channel ID available for scheduling");
-                this.UI?.showToast?.("Impossible de trouver le canal.", { type: "error" });
+                this.UI?.showToast?.("Unable to find the channel.", { type: "error" });
                 return;
             }
 
@@ -990,10 +992,10 @@ module.exports = class MessageScheduler {
 
             this.refreshScheduledList(modal);
             this.renderSchedulerModal();
-            this.UI?.showToast?.(wasEditing ? "Message programmé mis à jour." : `Message programme ${scheduleInfo.label}.`, { type: "success" });
+            this.UI?.showToast?.(wasEditing ? "Scheduled message updated." : `Message scheduled ${scheduleInfo.label}.`, { type: "success" });
         } catch (error) {
             this.Logger?.error?.("Error in handleSchedule:", error);
-            this.UI?.showToast?.("Erreur lors de la programmation du message.", { type: "error" });
+            this.UI?.showToast?.("Error while scheduling the message.", { type: "error" });
         }
     }
 
@@ -1008,7 +1010,7 @@ module.exports = class MessageScheduler {
     getScheduledListMarkup() {
         const items = [...this.queue].sort((a, b) => a.dueAt - b.dueAt);
         if (!items.length) {
-            return `<div class="ms-empty">Aucun message programme.</div>`;
+            return `<div class="ms-empty">No scheduled messages.</div>`;
         }
 
         return items.map(item => {
@@ -1026,8 +1028,8 @@ module.exports = class MessageScheduler {
                     <div class="ms-scheduled-actions">
                         <span class="ms-scheduled-countdown" data-ms-countdown-id="${this.escapeHtml(item.id)}">${countdownLabel}</span>
                         <span class="ms-scheduled-pill">${shortTime}</span>
-                        <button class="ms-scheduled-edit" type="button" data-ms-edit-id="${this.escapeHtml(item.id)}">Modifier</button>
-                        <button class="ms-scheduled-cancel" type="button" data-ms-cancel-id="${this.escapeHtml(item.id)}">Annuler</button>
+                        <button class="ms-scheduled-edit" type="button" data-ms-edit-id="${this.escapeHtml(item.id)}">Edit</button>
+                        <button class="ms-scheduled-cancel" type="button" data-ms-cancel-id="${this.escapeHtml(item.id)}">Cancel</button>
                     </div>
                 </div>
             `;
@@ -1037,9 +1039,9 @@ module.exports = class MessageScheduler {
     getScheduleLabel(item) {
         const timeLabel = this.formatTime(item.dueAt);
         const base = this.cleanText(item.scheduleLabel);
-        if (!base) return `a ${timeLabel}`;
+        if (!base) return `at ${timeLabel}`;
         if (base.includes(":")) return base;
-        return `${base} (a ${timeLabel})`;
+        return `${base} (at ${timeLabel})`;
     }
 
     formatTime(timestamp) {
@@ -1052,7 +1054,7 @@ module.exports = class MessageScheduler {
     getCountdownLabel(timestamp) {
         const remainingMs = timestamp - Date.now();
         if (remainingMs <= 0) {
-            return "En attente";
+            return "Pending";
         }
 
         const totalSeconds = Math.ceil(remainingMs / 1000);
@@ -1146,7 +1148,7 @@ module.exports = class MessageScheduler {
         if (/^\d+$/.test(cleanedValue)) {
             const delayMinutes = Number.parseInt(cleanedValue, 10);
             // Validate: must be positive and reasonable (max 10 years worth of minutes)
-            if (!Number.isFinite(delayMinutes) || delayMinutes <= 0 || delayMinutes > 5256000) {
+            if (!Number.isFinite(delayMinutes) || delayMinutes < 0 || delayMinutes > 5256000) {
                 return null;
             }
 
@@ -1154,7 +1156,7 @@ module.exports = class MessageScheduler {
                 type: "delay",
                 delayMinutes,
                 dueAt: Date.now() + delayMinutes * 60000,
-                label: `dans ${delayMinutes} min`
+                label: delayMinutes === 0 ? "now" : `in ${delayMinutes} min`
             };
         }
 
@@ -1176,7 +1178,7 @@ module.exports = class MessageScheduler {
             type: "time",
             delayMinutes,
             dueAt: targetDate.getTime(),
-            label: `a ${cleanedValue}`
+            label: `at ${cleanedValue}`
         };
     }
 
@@ -1300,13 +1302,13 @@ module.exports = class MessageScheduler {
             const sent = await this.sendMessages(item.messages, item.channelId);
             if (!sent) {
                 this.Logger?.error?.(`Failed to send scheduled messages for item: ${itemId}`);
-                this.UI?.showToast?.("Echec de l envoi des messages programmes.", { type: "error" });
+                this.UI?.showToast?.("Failed to send scheduled messages.", { type: "error" });
             } else {
                 this.Logger?.log?.(`Successfully sent scheduled messages for item: ${itemId}`);
             }
         } catch (error) {
             this.Logger?.error?.("Error executing schedule:", error);
-            this.UI?.showToast?.("Erreur lors de l envoi des messages.", { type: "error" });
+            this.UI?.showToast?.("Error while sending messages.", { type: "error" });
         } finally {
             this.removeSchedule(itemId);
         }
@@ -1428,16 +1430,16 @@ module.exports = class MessageScheduler {
     }
 
     getChannelLabel(channelId) {
-        if (!channelId) return "Canal inconnu";
+        if (!channelId) return "Unknown channel";
         try {
             const store = this._channelStoreCache;
             const channel = store?.getChannel?.(channelId);
-            if (!channel) return `Canal ${channelId}`;
+            if (!channel) return `Channel ${channelId}`;
             const name = channel?.name ? `#${channel.name}` : "DM";
             return name;
         } catch (error) {
             this.Logger?.warn?.("Failed to get channel label:", error);
-            return `Canal ${channelId}`;
+            return `Channel ${channelId}`;
         }
     }
 };
