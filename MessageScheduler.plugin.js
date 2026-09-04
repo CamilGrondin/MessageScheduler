@@ -2,7 +2,7 @@
  * @name MessageScheduler
  * @author camilgrondin
  * @description Schedule one or more messages after X minutes or at HH:MM.
- * @version 0.1.0
+ * @version 0.2.0
  * @source https://github.com/CamilGrondin/MessageScheduler
  * @updateUrl https://raw.githubusercontent.com/CamilGrondin/MessageScheduler/main/MessageScheduler.plugin.js
  */
@@ -55,6 +55,7 @@ module.exports = class MessageScheduler {
         // ===== CONFIGURATION CONSTANTS =====
         // These define where we store data and what IDs we use in the DOM
         this.storageKey = "scheduled-messages";   // Key for persistent storage
+        this.draftStorageKey = "message-drafts";   // Key for unscheduled message drafts
         this.cssId = "message-scheduler-css";      // Style element ID
         this.modalId = "message-scheduler-modal";  // Modal dialog ID
         this.menuItemId = "message-scheduler-menu-item";  // Menu item ID
@@ -101,6 +102,9 @@ module.exports = class MessageScheduler {
         /** The last schedule value the user entered (we remember it for better UX) */
         this.lastScheduleValue = "";
 
+        /** Selected scheduling input mode: delay in minutes or a local clock time */
+        this.timingMode = "delay";
+
         /**
          * The ID of the schedule item being edited (empty string = creating new schedule)
          * When this is set, the modal loads this schedule's data for modification
@@ -128,6 +132,15 @@ module.exports = class MessageScheduler {
          * Properties: getChannelId(), getCurrentlySelectedChannelId()
          */
         this._selectedChannelStoreCache = null;
+
+        /**
+         * @type {Object|null} Module containing Discord user data
+         * Properties: getUser(id)
+         */
+        this._userStoreCache = null;
+
+        /** @type {Object|null} Module exposing Discord's currently selected locale */
+        this._localeStoreCache = null;
     }
 
     /**
@@ -249,6 +262,12 @@ module.exports = class MessageScheduler {
 
             // Find the SelectedChannelStore which tracks which channel is currently active
             this._selectedChannelStoreCache = this.Webpack?.getStore?.("SelectedChannelStore") || null;
+
+            // Find the UserStore so DM recipient IDs can be displayed as names
+            this._userStoreCache = this.Webpack?.getStore?.("UserStore") || null;
+
+            // LocaleStore is optional across Discord releases; DOM language is a fallback.
+            this._localeStoreCache = this.Webpack?.getStore?.("LocaleStore") || null;
         } catch (error) {
             // If caching fails, we'll just operate with nulls (graceful degradation)
             this.Logger?.warn?.("Failed to cache webpack modules:", error);
@@ -263,6 +282,8 @@ module.exports = class MessageScheduler {
         this._messageActionsCache = null;
         this._channelStoreCache = null;
         this._selectedChannelStoreCache = null;
+        this._userStoreCache = null;
+        this._localeStoreCache = null;
     }
 
     /**
@@ -369,6 +390,29 @@ module.exports = class MessageScheduler {
                 font-weight: 600;
                 max-width: 100%;
             }
+            #message-scheduler-modal .ms-recipient-chip {
+                max-width: min(100%, 280px);
+                overflow: hidden;
+                white-space: nowrap;
+                text-overflow: ellipsis;
+            }
+            #message-scheduler-modal .ms-recipient-avatar,
+            #message-scheduler-modal .ms-recipient-fallback {
+                width: 18px;
+                height: 18px;
+                flex: 0 0 18px;
+                border-radius: 50%;
+                object-fit: cover;
+            }
+            #message-scheduler-modal .ms-recipient-fallback {
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                background: rgba(255, 255, 255, 0.12);
+                color: var(--text-normal, #dbdee1);
+                font-size: 9px;
+                font-weight: 700;
+            }
             #message-scheduler-modal .ms-modal-close {
                 border: none;
                 background: rgba(255, 255, 255, 0.04);
@@ -440,7 +484,8 @@ module.exports = class MessageScheduler {
                 background: rgba(0, 0, 0, 0.24);
             }
             #message-scheduler-modal .ms-textarea {
-                min-height: 140px;
+                min-height: 108px;
+                max-height: 260px;
                 resize: vertical;
                 line-height: 1.45;
                 overflow: auto;
@@ -451,13 +496,60 @@ module.exports = class MessageScheduler {
                 font-size: 12px;
                 color: var(--text-muted, #949ba4);
             }
+            #message-scheduler-modal .ms-timing-mode,
+            #message-scheduler-modal .ms-timing-presets {
+                display: flex;
+                flex-wrap: wrap;
+                gap: 8px;
+            }
+            #message-scheduler-modal .ms-timing-mode-button,
+            #message-scheduler-modal .ms-timing-preset {
+                border: 1px solid rgba(255, 255, 255, 0.08);
+                border-radius: 8px;
+                background: rgba(255, 255, 255, 0.04);
+                color: var(--interactive-normal, #b5bac1);
+                cursor: pointer;
+                font: inherit;
+                font-size: 12px;
+                font-weight: 600;
+                line-height: 1;
+                padding: 8px 10px;
+                transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+            }
+            #message-scheduler-modal .ms-timing-mode-button[aria-pressed="true"],
+            #message-scheduler-modal .ms-timing-preset:hover,
+            #message-scheduler-modal .ms-timing-preset:focus-visible {
+                border-color: rgba(88, 101, 242, 0.48);
+                background: rgba(88, 101, 242, 0.16);
+                color: #dfe4ff;
+                outline: none;
+            }
+            #message-scheduler-modal .ms-timing-preset:focus-visible {
+                box-shadow: 0 0 0 3px rgba(88, 101, 242, 0.16);
+            }
             #message-scheduler-modal .ms-modal-footer {
                 padding: 14px 20px 18px;
                 display: flex;
-                justify-content: flex-end;
-                gap: 8px;
+                align-items: center;
+                justify-content: space-between;
+                gap: 16px;
                 border-top: 1px solid rgba(255, 255, 255, 0.06);
                 background: rgba(255, 255, 255, 0.02);
+            }
+            #message-scheduler-modal .ms-schedule-summary {
+                min-width: 0;
+                color: var(--text-muted, #949ba4);
+                font-size: 12px;
+                line-height: 1.35;
+            }
+            #message-scheduler-modal .ms-schedule-summary[data-ms-ready="true"] {
+                color: #cfd7ff;
+            }
+            #message-scheduler-modal .ms-modal-actions {
+                display: flex;
+                align-items: center;
+                gap: 8px;
+                flex: 0 0 auto;
             }
             #message-scheduler-modal .ms-btn {
                 border: none;
@@ -484,6 +576,12 @@ module.exports = class MessageScheduler {
             #message-scheduler-modal .ms-btn-primary:hover {
                 transform: translateY(-1px);
                 box-shadow: 0 14px 28px rgba(88, 101, 242, 0.3);
+            }
+            #message-scheduler-modal .ms-btn-primary:disabled {
+                cursor: not-allowed;
+                opacity: 0.45;
+                transform: none;
+                box-shadow: none;
             }
             #message-scheduler-modal .ms-scheduled-list {
                 display: flex;
@@ -517,6 +615,26 @@ module.exports = class MessageScheduler {
                 font-size: 12px;
                 color: var(--text-muted, #949ba4);
                 line-height: 1.25;
+            }
+            #message-scheduler-modal .ms-scheduled-recipient {
+                display: flex;
+                align-items: center;
+                gap: 6px;
+                min-width: 0;
+            }
+            #message-scheduler-modal .ms-scheduled-recipient .ms-recipient-avatar,
+            #message-scheduler-modal .ms-scheduled-recipient .ms-recipient-fallback {
+                width: 16px;
+                height: 16px;
+                flex-basis: 16px;
+            }
+            #message-scheduler-modal .ms-scheduled-preview {
+                overflow: hidden;
+                color: var(--text-muted, #949ba4);
+                font-size: 12px;
+                line-height: 1.3;
+                text-overflow: ellipsis;
+                white-space: nowrap;
             }
             #message-scheduler-modal .ms-scheduled-actions {
                 display: flex;
@@ -577,74 +695,103 @@ module.exports = class MessageScheduler {
                 font-weight: 600;
                 padding: 6px 10px;
                 border-radius: 10px;
+                display: inline-flex;
+                align-items: center;
+                gap: 5px;
                 transition: background 0.15s ease, color 0.15s ease, transform 0.15s ease;
+            }
+            #message-scheduler-modal .ms-scheduled-cancel svg {
+                width: 13px;
+                height: 13px;
+                fill: none;
+                stroke: currentColor;
+                stroke-linecap: round;
+                stroke-linejoin: round;
+                stroke-width: 2;
             }
             #message-scheduler-modal .ms-scheduled-cancel:hover {
                 background: rgba(255, 255, 255, 0.08);
                 color: var(--text-normal, #dbdee1);
                 transform: translateY(-1px);
             }
+            #message-scheduler-modal .ms-scheduled-cancel[data-ms-confirming="true"] {
+                border-color: rgba(237, 66, 69, 0.45);
+                background: rgba(237, 66, 69, 0.16);
+                color: #ffb3b5;
+            }
             #message-scheduler-modal .ms-empty {
                 font-size: 12px;
                 color: var(--text-muted, #949ba4);
                 padding: 8px 0;
             }
+            @media (max-width: 560px) {
+                #message-scheduler-modal .ms-modal-footer {
+                    align-items: stretch;
+                    flex-direction: column;
+                }
+                #message-scheduler-modal .ms-modal-actions {
+                    justify-content: flex-end;
+                }
+                #message-scheduler-modal .ms-scheduled-row {
+                    align-items: flex-start;
+                    flex-direction: column;
+                }
+                #message-scheduler-modal .ms-scheduled-actions {
+                    width: 100%;
+                    justify-content: flex-start;
+                }
+            }
             .ms-attachment-menu-item {
                 display: flex;
                 align-items: center;
-                gap: 12px;
-                width: calc(100% - 12px);
-                min-height: 56px;
-                margin: 6px 6px 8px;
-                padding: 10px 12px;
-                border: 1px solid rgba(88, 101, 242, 0.18);
-                border-radius: 14px;
-                background: linear-gradient(180deg, rgba(88, 101, 242, 0.16), rgba(88, 101, 242, 0.08));
+                width: 100%;
+                min-height: 40px;
+                margin: 0;
+                padding: 8px 12px;
+                border: 0;
+                border-radius: 4px;
+                background: transparent;
                 color: var(--interactive-normal, #b5bac1);
                 cursor: pointer;
                 font: inherit;
                 text-align: left;
                 flex: 0 0 100%;
                 align-self: stretch;
-                box-shadow: 0 8px 16px rgba(0, 0, 0, 0.14);
-                transition: transform 0.15s ease, background 0.15s ease, color 0.15s ease, box-shadow 0.15s ease;
             }
             .ms-attachment-menu-item:hover,
             .ms-attachment-menu-item:focus-visible {
-                background: linear-gradient(180deg, rgba(88, 101, 242, 0.22), rgba(88, 101, 242, 0.12));
-                color: var(--interactive-active, #ffffff);
+                background: var(--background-modifier-hover, rgba(255, 255, 255, 0.06));
+                color: var(--interactive-hover, #dbdee1);
                 outline: none;
-                transform: translateY(-1px);
-                box-shadow: 0 14px 24px rgba(0, 0, 0, 0.18);
             }
             .ms-attachment-menu-icon {
-                width: 30px;
-                height: 30px;
-                flex: 0 0 30px;
+                width: 20px;
+                height: 20px;
+                flex: 0 0 20px;
                 display: inline-flex;
                 align-items: center;
                 justify-content: center;
-                border-radius: 10px;
-                background: rgba(13, 16, 29, 0.34);
-                border: 1px solid rgba(255, 255, 255, 0.08);
-                color: #ffffff;
-                font-size: 15px;
+                color: currentColor;
+            }
+            .ms-attachment-menu-icon svg {
+                width: 20px;
+                height: 20px;
+                fill: none;
+                stroke: currentColor;
+                stroke-linecap: round;
+                stroke-linejoin: round;
+                stroke-width: 2;
             }
             .ms-attachment-menu-content {
                 display: flex;
-                flex-direction: column;
+                align-items: center;
                 min-width: 0;
-                gap: 3px;
+                margin-left: 8px;
             }
             .ms-attachment-menu-label {
                 font-size: 14px;
-                font-weight: 700;
-                line-height: 1.15;
-            }
-            .ms-attachment-menu-subtext {
-                font-size: 12px;
-                line-height: 1.25;
-                color: var(--text-muted, #949ba4);
+                font-weight: 400;
+                line-height: 20px;
             }
         `;
 
@@ -982,18 +1129,26 @@ module.exports = class MessageScheduler {
      * @returns {HTMLElement}
      */
     createAttachmentMenuItem() {
+        let isOpening = false;
+
         // Create button element
         const item = document.createElement("button");
         item.type = "button";
         item.className = "ms-attachment-menu-item";
         item.setAttribute("role", "menuitem");
-        item.setAttribute("aria-label", "Schedule a message");
+        item.setAttribute("aria-label", this.t("scheduleMessage"));
         item.dataset.msMenuItem = "1";
 
-        // Icon (clock emoji)
+        // Icon styled like Discord's native attachment-menu icons.
         const icon = document.createElement("span");
         icon.className = "ms-attachment-menu-icon";
-        icon.textContent = "⏱";
+        icon.setAttribute("aria-hidden", "true");
+        icon.innerHTML = `
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+                <circle cx="12" cy="12" r="8.5"></circle>
+                <path d="M12 7.5v5l3.25 2"></path>
+            </svg>
+        `;
 
         // Content wrapper
         const content = document.createElement("span");
@@ -1002,14 +1157,9 @@ module.exports = class MessageScheduler {
         // Main label
         const label = document.createElement("span");
         label.className = "ms-attachment-menu-label";
-        label.textContent = "Schedule a message";
+        label.textContent = this.t("scheduleMessage");
 
-        // Helper text
-        const subtext = document.createElement("span");
-        subtext.className = "ms-attachment-menu-subtext";
-        subtext.textContent = "After X min or at HH:MM";
-
-        content.append(label, subtext);
+        content.append(label);
         item.append(icon, content);
 
         // Handler for opening the scheduler
@@ -1017,14 +1167,23 @@ module.exports = class MessageScheduler {
             event.preventDefault();
             event.stopPropagation();
 
-            // Close Discord's attachment menu
-            this.closeDiscordAttachmentMenu();
+            // A keyboard activation can be followed by a click. Only open one modal.
+            if (isOpening) return;
+            isOpening = true;
+
+            // Save the channel before the popout is dismissed.
+            const channelId = this.getCurrentChannelId();
+
+            // Close Discord's attachment menu before mounting our modal. Opening both
+            // in the same event turn leaves the attachment popout visible on current
+            // Discord builds.
+            this.closeDiscordAttachmentMenu(item);
 
             // Close any of our injected menus
             this.closeInjectedAttachmentMenus();
 
-            // Open the scheduler modal for this channel
-            this.openSchedulerModal({ channelId: this.getCurrentChannelId() });
+            // Let Discord process the popout dismissal before opening the scheduler.
+            this.openSchedulerModalAfterAttachmentMenuCloses(channelId);
         };
 
         // Support both click and keyboard navigation
@@ -1065,38 +1224,61 @@ module.exports = class MessageScheduler {
     }
 
     /**
-     * Close Discord's attachment menu by simulating an Escape key press
+     * Close Discord's attachment menu through its expanded trigger, then notify its
+     * keyboard handler as a compatibility fallback.
+     *
+     * @param {HTMLElement} sourceItem - The item selected in the attachment menu
      */
-    closeDiscordAttachmentMenu() {
+    closeDiscordAttachmentMenu(sourceItem) {
         try {
-            // Find all dialog/modal elements
-            const dialogBackdrops = document.querySelectorAll('[role="dialog"], [aria-modal="true"]');
+            const menu = sourceItem?.closest?.('[role="menu"], [role="dialog"], [aria-modal="true"]') || null;
+            const openTriggers = Array.from(document.querySelectorAll('[aria-expanded="true"]'));
+            const trigger = openTriggers.find(element =>
+                element instanceof HTMLElement &&
+                !element.closest(`#${this.modalId}`) &&
+                !menu?.contains(element)
+            );
 
-            for (const backdrop of dialogBackdrops) {
-                // Skip our modal
-                if (backdrop === document.getElementById(this.modalId)) continue;
-
-                // Skip our menus
-                if (backdrop.dataset.msMenuHost === "1") continue;
-
-                // Only close if still in DOM
-                if (backdrop.isConnected) {
-                    // Simulate Escape key
-                    const event = new KeyboardEvent("keydown", {
-                        key: "Escape",
-                        code: "Escape",
-                        keyCode: 27,
-                        which: 27,
-                        bubbles: true,
-                        cancelable: true
-                    });
-                    backdrop.dispatchEvent(event);
-                    break;
-                }
+            // The attachment button owns the popout state. Clicking it again closes
+            // the popout through Discord rather than removing Discord-owned markup.
+            if (trigger) {
+                trigger.click();
             }
+
+            const escapeOptions = {
+                key: "Escape",
+                code: "Escape",
+                keyCode: 27,
+                which: 27,
+                bubbles: true,
+                cancelable: true
+            };
+
+            // Some Discord releases use a document-level Escape handler instead.
+            // Dispatch to both the relevant popout and the document for that case.
+            if (menu?.isConnected) {
+                menu.dispatchEvent(new KeyboardEvent("keydown", escapeOptions));
+            }
+            document.dispatchEvent(new KeyboardEvent("keydown", escapeOptions));
         } catch (error) {
             this.Logger?.warn?.("Failed to close Discord menu:", error);
         }
+    }
+
+    /**
+     * Open the scheduler after Discord has processed the attachment-menu dismissal.
+     *
+     * @param {string} channelId - Channel selected when the menu item was activated
+     */
+    openSchedulerModalAfterAttachmentMenuCloses(channelId) {
+        const open = () => this.openSchedulerModal({ channelId });
+
+        if (typeof window.requestAnimationFrame === "function") {
+            window.requestAnimationFrame(() => window.requestAnimationFrame(open));
+            return;
+        }
+
+        window.setTimeout(open, 0);
     }
 
     // ===== SCHEDULER MODAL =====
@@ -1130,6 +1312,9 @@ module.exports = class MessageScheduler {
         try {
             const modal = document.getElementById(this.modalId);
             if (modal && modal.isConnected) {
+                if (!skipRender) {
+                    this.saveDraftFromModal(modal);
+                }
                 modal.remove();
             }
         } catch (error) {
@@ -1201,64 +1386,293 @@ module.exports = class MessageScheduler {
      * @returns {string} HTML for the modal
      */
     getModalMarkup() {
-        const channelLabel = this.escapeHtml(this.getChannelLabel(this.activeChannelId));
         const isEditing = Boolean(this.editingScheduleId);
-        const modalTitle = isEditing ? "Edit scheduled message" : "Schedule a message";
-        const actionLabel = isEditing ? "Update" : "Schedule";
-
-        // If editing, load existing data
         const editingItem = isEditing ? this.queue.find(entry => entry.id === this.editingScheduleId) : null;
-        const messageValue = this.escapeHtml(editingItem ? editingItem.messages.join("\n---\n") : "");
-        const scheduleValue = this.escapeHtml(
-            editingItem ? (editingItem.scheduleInput || editingItem.scheduleLabel || "") : (this.lastScheduleValue || "")
-        );
+        const draft = isEditing ? "" : this.getDraft(this.activeChannelId);
+        const messageValue = this.escapeHtml(editingItem ? editingItem.messages.join("\n---\n") : draft);
+        const rawScheduleValue = editingItem
+            ? (editingItem.scheduleInput || editingItem.scheduleLabel || "")
+            : (this.lastScheduleValue || "");
+        const scheduleValue = this.escapeHtml(rawScheduleValue);
+        this.timingMode = this.getTimingMode(rawScheduleValue);
+
+        const destination = this.getScheduledDestination(this.activeChannelId);
+        const destinationMarkup = this.getDestinationMarkup(destination, "ms-recipient-chip");
+        const modalTitle = this.t(isEditing ? "editScheduledMessage" : "scheduleMessage");
+        const actionLabel = this.t(isEditing ? "update" : "schedule");
+        const scheduledSection = this.queue.length ? `
+            <section class="ms-section">
+                <div class="ms-section-header">
+                    <span class="ms-section-title">${this.t("scheduledMessages")}</span>
+                    <span class="ms-section-hint">${this.formatPendingCount(this.queue.length)}</span>
+                </div>
+                <div class="ms-scheduled-list" data-ms-scheduled-list>
+                    ${this.getScheduledListMarkup()}
+                </div>
+            </section>
+        ` : "";
 
         return `
             <div class="ms-modal-dialog" role="dialog" aria-modal="true" aria-labelledby="ms-modal-title">
                 <div class="ms-modal-header">
                     <div class="ms-modal-heading">
-                        <div class="ms-modal-kicker">Scheduling</div>
+                        <div class="ms-modal-kicker">${this.t("scheduling")}</div>
                         <div class="ms-modal-title-row">
                             <div class="ms-modal-title" id="ms-modal-title">${modalTitle}</div>
-                            <span class="ms-modal-chip">${channelLabel}</span>
+                            ${destinationMarkup}
                         </div>
-                        <div class="ms-modal-subtitle">Write your message(s), then set a delay or time.</div>
+                        <div class="ms-modal-subtitle">${this.t("modalSubtitle")}</div>
                     </div>
-                    <button class="ms-modal-close" type="button" data-ms-close aria-label="Close">x</button>
+                    <button class="ms-modal-close" type="button" data-ms-close aria-label="${this.t("close")}">×</button>
                 </div>
                 <div class="ms-modal-body">
                     <section class="ms-section">
                         <div class="ms-section-header">
-                            <span class="ms-section-title">Messages</span>
-                            <span class="ms-section-hint">Separate blocks with ---</span>
+                            <span class="ms-section-title">${this.t("messages")}</span>
+                            <span class="ms-section-hint">${this.t("separateBlocks")}</span>
                         </div>
-                        <textarea id="ms-message" class="ms-textarea" placeholder="Message 1\n---\nMessage 2">${messageValue}</textarea>
-                        <div class="ms-help">Each block is sent as its own message.</div>
+                        <textarea id="ms-message" class="ms-textarea" placeholder="${this.t("messagePlaceholder")}">${messageValue}</textarea>
+                        <div class="ms-help">${this.t("messageHelp")}</div>
                     </section>
                     <section class="ms-section">
                         <div class="ms-section-header">
-                            <span class="ms-section-title">Timing</span>
-                            <span class="ms-section-hint">Minutes or local time (HH:MM)</span>
+                            <span class="ms-section-title">${this.t("when")}</span>
+                            <span class="ms-section-hint" data-ms-timing-hint>${this.getTimingHint()}</span>
                         </div>
-                        <input id="ms-schedule" class="ms-input" placeholder="15 or 20:30" value="${scheduleValue}" />
-                        <div class="ms-help">Example: 15 or 20:30</div>
+                        <div class="ms-timing-mode" role="group" aria-label="${this.t("when")}">
+                            <button class="ms-timing-mode-button" type="button" data-ms-timing-mode="delay" aria-pressed="${this.timingMode === "delay"}">${this.t("delay")}</button>
+                            <button class="ms-timing-mode-button" type="button" data-ms-timing-mode="time" aria-pressed="${this.timingMode === "time"}">${this.t("atTime")}</button>
+                        </div>
+                        <div class="ms-timing-presets" data-ms-timing-presets>
+                            <button class="ms-timing-preset" type="button" data-ms-timing-preset="5">${this.t("inFiveMinutes")}</button>
+                            <button class="ms-timing-preset" type="button" data-ms-timing-preset="60">${this.t("inOneHour")}</button>
+                            <button class="ms-timing-preset" type="button" data-ms-timing-preset="tonight">${this.t("tonight")}</button>
+                            <button class="ms-timing-preset" type="button" data-ms-timing-preset="tomorrowMorning">${this.t("tomorrowMorning")}</button>
+                        </div>
+                        <input id="ms-schedule" class="ms-input" data-ms-schedule-input autocomplete="off" placeholder="${this.getTimingPlaceholder()}" value="${scheduleValue}" />
+                        <div class="ms-help" data-ms-timing-example>${this.getTimingExample()}</div>
                     </section>
-                    <section class="ms-section">
-                        <div class="ms-section-header">
-                            <span class="ms-section-title">Scheduled messages</span>
-                            <span class="ms-section-hint">${this.queue.length} pending</span>
-                        </div>
-                        <div class="ms-scheduled-list" data-ms-scheduled-list>
-                            ${this.getScheduledListMarkup()}
-                        </div>
-                    </section>
+                    ${scheduledSection}
                 </div>
                 <div class="ms-modal-footer">
-                    <button class="ms-btn ms-btn-secondary" type="button" data-ms-cancel>Cancel</button>
-                    <button class="ms-btn ms-btn-primary" type="button" data-ms-schedule>${actionLabel}</button>
+                    <div class="ms-schedule-summary" data-ms-schedule-summary aria-live="polite"></div>
+                    <div class="ms-modal-actions">
+                        <button class="ms-btn ms-btn-secondary" type="button" data-ms-cancel>${this.t("cancel")}</button>
+                        <button class="ms-btn ms-btn-primary" type="button" data-ms-schedule>${actionLabel}</button>
+                    </div>
                 </div>
             </div>
         `;
+    }
+
+    /**
+     * Read Discord's locale when available, with browser-language fallbacks.
+     *
+     * @returns {string}
+     */
+    getDiscordLocale() {
+        try {
+            const locale = this._localeStoreCache?.getLocale?.() ||
+                this._localeStoreCache?.locale ||
+                (typeof document !== "undefined" ? document.documentElement?.lang : "") ||
+                (typeof navigator !== "undefined" ? navigator.language : "") ||
+                "en-US";
+            return String(locale);
+        } catch {
+            return "en-US";
+        }
+    }
+
+    /**
+     * Localized interface copy. The modal follows Discord's active language when it
+     * is French and otherwise keeps its English copy.
+     *
+     * @param {string} key
+     * @returns {string}
+     */
+    t(key) {
+        const isFrench = this.getDiscordLocale().toLowerCase().startsWith("fr");
+        const copy = isFrench ? {
+            scheduling: "Programmation",
+            scheduleMessage: "Programmer un message",
+            editScheduledMessage: "Modifier le message programmé",
+            modalSubtitle: "Écrivez votre ou vos messages, puis choisissez un délai ou une heure.",
+            close: "Fermer",
+            messages: "Messages",
+            separateBlocks: "Séparez les blocs avec ---",
+            messagePlaceholder: "Message 1\n---\nMessage 2",
+            messageHelp: "Chaque bloc sera envoyé comme un message distinct.",
+            when: "Quand",
+            delay: "Délai",
+            atTime: "À une heure",
+            minutes: "Minutes",
+            localTime: "Heure locale (HH:MM)",
+            delayExample: "Exemple : 15",
+            timeExample: "Exemple : 20:30",
+            inFiveMinutes: "Dans 5 min",
+            inOneHour: "Dans 1 h",
+            tonight: "Ce soir",
+            tomorrowMorning: "Demain 09:00",
+            scheduledMessages: "Messages programmés",
+            pending: "en attente",
+            cancel: "Annuler",
+            schedule: "Programmer",
+            update: "Mettre à jour",
+            edit: "Modifier",
+            confirmCancel: "Confirmer ?",
+            cancelScheduled: "Annuler ce message programmé",
+            addMessage: "Ajoutez un message pour continuer.",
+            chooseTiming: "Choisissez un délai ou une heure d’envoi.",
+            to: "À",
+            channel: "Canal",
+            recipientUnknown: "Destinataire inconnu",
+            recipientUnavailable: "Destinataire indisponible",
+            now: "maintenant",
+            at: "à",
+            message: "message",
+            messagesCount: "messages"
+        } : {
+            scheduling: "Scheduling",
+            scheduleMessage: "Schedule a message",
+            editScheduledMessage: "Edit scheduled message",
+            modalSubtitle: "Write your message(s), then choose a delay or a time.",
+            close: "Close",
+            messages: "Messages",
+            separateBlocks: "Separate blocks with ---",
+            messagePlaceholder: "Message 1\n---\nMessage 2",
+            messageHelp: "Each block is sent as its own message.",
+            when: "When",
+            delay: "Delay",
+            atTime: "At a time",
+            minutes: "Minutes",
+            localTime: "Local time (HH:MM)",
+            delayExample: "Example: 15",
+            timeExample: "Example: 20:30",
+            inFiveMinutes: "In 5 min",
+            inOneHour: "In 1 hour",
+            tonight: "Tonight",
+            tomorrowMorning: "Tomorrow 09:00",
+            scheduledMessages: "Scheduled messages",
+            pending: "pending",
+            cancel: "Cancel",
+            schedule: "Schedule",
+            update: "Update",
+            edit: "Edit",
+            confirmCancel: "Confirm?",
+            cancelScheduled: "Cancel this scheduled message",
+            addMessage: "Add a message to continue.",
+            chooseTiming: "Choose a delay or send time.",
+            to: "To",
+            channel: "Channel",
+            recipientUnknown: "Recipient unknown",
+            recipientUnavailable: "DM recipient unavailable",
+            now: "now",
+            at: "at",
+            message: "message",
+            messagesCount: "messages"
+        };
+
+        return copy[key] || key;
+    }
+
+    /**
+     * @param {string} value
+     * @returns {"delay"|"time"}
+     */
+    getTimingMode(value) {
+        return /^\d{1,2}:\d{2}$/.test(this.cleanText(value)) ? "time" : "delay";
+    }
+
+    /** @returns {string} */
+    getTimingHint() {
+        return this.timingMode === "time" ? this.t("localTime") : this.t("minutes");
+    }
+
+    /** @returns {string} */
+    getTimingPlaceholder() {
+        return this.timingMode === "time" ? "20:30" : "15";
+    }
+
+    /** @returns {string} */
+    getTimingExample() {
+        return this.timingMode === "time" ? this.t("timeExample") : this.t("delayExample");
+    }
+
+    /**
+     * @param {number} count
+     * @returns {string}
+     */
+    formatPendingCount(count) {
+        const amount = Number(count) || 0;
+        return `${amount} ${this.t("pending")}`;
+    }
+
+    /**
+     * @param {number} count
+     * @returns {string}
+     */
+    formatMessageCount(count) {
+        const amount = Number(count) || 0;
+        return `${amount} ${amount === 1 ? this.t("message") : this.t("messagesCount")}`;
+    }
+
+    /**
+     * Create the value for one of the timing shortcuts.
+     *
+     * @param {string} preset
+     * @returns {{mode: "delay"|"time", value: string}|null}
+     */
+    getTimingPreset(preset) {
+        if (preset === "5" || preset === "60") {
+            return { mode: "delay", value: preset };
+        }
+
+        const target = new Date();
+        if (preset === "tonight") {
+            target.setHours(20, 0, 0, 0);
+            if (target.getTime() <= Date.now()) target.setDate(target.getDate() + 1);
+        } else if (preset === "tomorrowMorning") {
+            target.setDate(target.getDate() + 1);
+            target.setHours(9, 0, 0, 0);
+        } else {
+            return null;
+        }
+
+        return {
+            mode: "time",
+            value: `${String(target.getHours()).padStart(2, "0")}:${String(target.getMinutes()).padStart(2, "0")}`
+        };
+    }
+
+    /**
+     * @param {Object} destination
+     * @param {string} className
+     * @returns {string}
+     */
+    getDestinationMarkup(destination, className = "") {
+        const label = this.escapeHtml(destination?.label || this.t("recipientUnknown"));
+        const avatar = this.getDestinationAvatarMarkup(destination);
+
+        return `<span class="ms-modal-chip ${className}" title="${label}">${avatar}<span>${label}</span></span>`;
+    }
+
+    /**
+     * @param {Object} destination
+     * @returns {string}
+     */
+    getDestinationAvatarMarkup(destination) {
+        return destination?.avatarUrl
+            ? `<img class="ms-recipient-avatar" src="${this.escapeHtml(destination.avatarUrl)}" alt="" referrerpolicy="no-referrer" />`
+            : `<span class="ms-recipient-fallback" aria-hidden="true">${this.escapeHtml(this.getInitials(destination?.label || "?"))}</span>`;
+    }
+
+    /**
+     * @param {string} value
+     * @returns {string}
+     */
+    getInitials(value) {
+        return this.cleanText(value).split(/\s+/).filter(Boolean).slice(0, 2)
+            .map(part => part.charAt(0).toUpperCase()).join("") || "?";
     }
 
     /**
@@ -1267,11 +1681,38 @@ module.exports = class MessageScheduler {
      * @param {HTMLElement} modal - The modal element
      */
     bindModalEvents(modal) {
-        // Click outside to close
+        // Close only when the press starts and ends on the backdrop. This preserves
+        // text selections that begin inside the scheduler and end outside it.
         const backdrop = modal.hasAttribute("data-ms-backdrop") ? modal : modal.querySelector("[data-ms-backdrop]");
         if (backdrop) {
+            let backdropPointer = null;
+
+            backdrop.addEventListener("pointerdown", event => {
+                if (!event.isPrimary || event.button !== 0) return;
+
+                backdropPointer = {
+                    id: event.pointerId,
+                    startedOnBackdrop: event.target === backdrop,
+                    endedOnBackdrop: false
+                };
+            });
+
+            backdrop.addEventListener("pointerup", event => {
+                if (!backdropPointer || event.pointerId !== backdropPointer.id) return;
+                backdropPointer.endedOnBackdrop = event.target === backdrop;
+            });
+
+            backdrop.addEventListener("pointercancel", () => {
+                backdropPointer = null;
+            });
+
             backdrop.addEventListener("click", event => {
-                if (event.target === backdrop) {
+                const shouldClose = event.target === backdrop &&
+                    backdropPointer?.startedOnBackdrop &&
+                    backdropPointer?.endedOnBackdrop;
+                backdropPointer = null;
+
+                if (shouldClose) {
                     this.closeSchedulerModal();
                 }
             });
@@ -1295,8 +1736,131 @@ module.exports = class MessageScheduler {
             });
         }
 
+        const messageField = modal.querySelector("#ms-message");
+        const scheduleField = modal.querySelector("#ms-schedule");
+        messageField?.addEventListener("input", () => {
+            this.autoResizeMessageField(messageField);
+            this.updateScheduleSummary(modal);
+        });
+        scheduleField?.addEventListener("input", () => {
+            if (this.cleanText(scheduleField.value)) {
+                this.timingMode = this.getTimingMode(scheduleField.value);
+                this.updateTimingControls(modal);
+            }
+            this.updateScheduleSummary(modal);
+        });
+
+        modal.querySelectorAll("[data-ms-timing-mode]").forEach(button => {
+            button.addEventListener("click", event => {
+                event.preventDefault();
+                const mode = button.getAttribute("data-ms-timing-mode");
+                if (mode !== "delay" && mode !== "time") return;
+
+                this.timingMode = mode;
+                this.updateTimingControls(modal);
+                this.updateScheduleSummary(modal);
+                scheduleField?.focus();
+            });
+        });
+
+        modal.querySelectorAll("[data-ms-timing-preset]").forEach(button => {
+            button.addEventListener("click", event => {
+                event.preventDefault();
+                const preset = this.getTimingPreset(button.getAttribute("data-ms-timing-preset") || "");
+                if (!preset || !scheduleField) return;
+
+                this.timingMode = preset.mode;
+                scheduleField.value = preset.value;
+                this.updateTimingControls(modal);
+                this.updateScheduleSummary(modal);
+                scheduleField.focus();
+            });
+        });
+
         // List event handlers
         this.bindScheduledListEvents(modal);
+        this.updateTimingControls(modal);
+        this.autoResizeMessageField(messageField);
+        this.updateScheduleSummary(modal);
+    }
+
+    /**
+     * Keep an empty composer compact while allowing longer drafts to expand without
+     * making the surrounding dialog jump past a usable height.
+     *
+     * @param {HTMLTextAreaElement|null} field
+     */
+    autoResizeMessageField(field) {
+        if (!field) return;
+
+        field.style.height = "auto";
+        const height = Math.min(260, Math.max(108, field.scrollHeight));
+        field.style.height = `${height}px`;
+        field.style.overflowY = field.scrollHeight > height ? "auto" : "hidden";
+    }
+
+    /**
+     * Keep timing labels and the selected segmented control in sync.
+     *
+     * @param {HTMLElement} modal
+     */
+    updateTimingControls(modal) {
+        modal.querySelectorAll("[data-ms-timing-mode]").forEach(button => {
+            button.setAttribute("aria-pressed", String(button.getAttribute("data-ms-timing-mode") === this.timingMode));
+        });
+
+        const scheduleField = modal.querySelector("#ms-schedule");
+        const hint = modal.querySelector("[data-ms-timing-hint]");
+        const example = modal.querySelector("[data-ms-timing-example]");
+        if (scheduleField) scheduleField.placeholder = this.getTimingPlaceholder();
+        if (hint) hint.textContent = this.getTimingHint();
+        if (example) example.textContent = this.getTimingExample();
+    }
+
+    /**
+     * Render the exact send outcome and keep the primary action disabled until the
+     * message and time are both valid.
+     *
+     * @param {HTMLElement} modal
+     */
+    updateScheduleSummary(modal) {
+        const summary = modal.querySelector("[data-ms-schedule-summary]");
+        const scheduleButton = modal.querySelector("[data-ms-schedule]");
+        const messageCount = this.parseMessages(modal.querySelector("#ms-message")?.value || "").length;
+        const scheduleInfo = this.parseSchedule(modal.querySelector("#ms-schedule")?.value || "");
+        const isReady = Boolean(messageCount && scheduleInfo);
+
+        if (summary) {
+            summary.dataset.msReady = String(isReady);
+            summary.textContent = isReady
+                ? this.getScheduleSummaryText(messageCount, scheduleInfo)
+                : messageCount ? this.t("chooseTiming") : this.t("addMessage");
+        }
+
+        if (scheduleButton) {
+            scheduleButton.disabled = !isReady;
+            scheduleButton.title = isReady ? "" : (messageCount ? this.t("chooseTiming") : this.t("addMessage"));
+        }
+    }
+
+    /**
+     * @param {number} messageCount
+     * @param {Object} scheduleInfo
+     * @returns {string}
+     */
+    getScheduleSummaryText(messageCount, scheduleInfo) {
+        const destination = this.getScheduledDestination(this.activeChannelId);
+        const time = this.formatTime(scheduleInfo.dueAt);
+        const isFrench = this.getDiscordLocale().toLowerCase().startsWith("fr");
+        const when = scheduleInfo.type === "delay"
+            ? (isFrench
+                ? `dans ${scheduleInfo.delayMinutes} min (à ${time})`
+                : `in ${scheduleInfo.delayMinutes} min (at ${time})`)
+            : (isFrench ? `à ${time}` : `at ${time}`);
+
+        return isFrench
+            ? `Envoi de ${this.formatMessageCount(messageCount)} à ${destination.label} ${when}.`
+            : `Sending ${this.formatMessageCount(messageCount)} to ${destination.label} ${when}.`;
     }
 
     /**
@@ -1323,9 +1887,26 @@ module.exports = class MessageScheduler {
             button.addEventListener("click", event => {
                 event.preventDefault();
                 const itemId = button.getAttribute("data-ms-cancel-id");
-                if (itemId) {
+                if (!itemId) return;
+
+                if (button.dataset.msConfirming === "true") {
                     this.removeSchedule(itemId);
+                    return;
                 }
+
+                button.dataset.msConfirming = "true";
+                const label = button.querySelector("[data-ms-cancel-label]");
+                if (label) label.textContent = this.t("confirmCancel");
+                button.setAttribute("aria-label", this.t("confirmCancel"));
+                button.title = this.t("confirmCancel");
+
+                window.setTimeout(() => {
+                    if (!button.isConnected || button.dataset.msConfirming !== "true") return;
+                    delete button.dataset.msConfirming;
+                    if (label) label.textContent = this.t("cancel");
+                    button.setAttribute("aria-label", this.t("cancelScheduled"));
+                    button.title = this.t("cancelScheduled");
+                }, 3500);
             });
         });
     }
@@ -1403,6 +1984,7 @@ module.exports = class MessageScheduler {
 
             // Save
             this.saveQueue();
+            this.clearDraft(channelId);
 
             // Clear form
             this.lastScheduleValue = scheduleValue;
@@ -1435,6 +2017,11 @@ module.exports = class MessageScheduler {
         const list = modal.querySelector("[data-ms-scheduled-list]");
         if (!list) return;
 
+        if (!this.queue.length) {
+            list.closest(".ms-section")?.remove();
+            return;
+        }
+
         list.innerHTML = this.getScheduledListMarkup();
         this.bindScheduledListEvents(modal);
     }
@@ -1449,31 +2036,48 @@ module.exports = class MessageScheduler {
         const items = [...this.queue].sort((a, b) => a.dueAt - b.dueAt);
 
         if (!items.length) {
-            return `<div class="ms-empty">No scheduled messages.</div>`;
+            return "";
         }
 
         return items.map(item => {
-            const channelLabel = this.escapeHtml(this.getChannelLabel(item.channelId));
+            const destination = this.getScheduledDestination(item.channelId);
+            const recipientLabel = this.escapeHtml(this.getScheduledRecipientLabel(item.channelId));
+            const recipientAvatar = this.getDestinationAvatarMarkup(destination);
             const messageCount = item.messages.length;
             const scheduleLabel = this.escapeHtml(this.getScheduleLabel(item));
             const shortTime = this.escapeHtml(this.formatTime(item.dueAt));
             const countdownLabel = this.escapeHtml(this.getCountdownLabel(item.dueAt));
+            const preview = this.escapeHtml(this.getMessagePreview(item.messages));
 
             return `
                 <div class="ms-scheduled-row">
                     <div class="ms-scheduled-main">
                         <div class="ms-scheduled-title">${scheduleLabel}</div>
-                        <div class="ms-scheduled-meta">${channelLabel} · ${messageCount} message(s)</div>
+                        <div class="ms-scheduled-meta ms-scheduled-recipient">${recipientAvatar}<span>${recipientLabel} · ${this.formatMessageCount(messageCount)}</span></div>
+                        ${preview ? `<div class="ms-scheduled-preview">${preview}</div>` : ""}
                     </div>
                     <div class="ms-scheduled-actions">
                         <span class="ms-scheduled-countdown" data-ms-countdown-id="${this.escapeHtml(item.id)}">${countdownLabel}</span>
                         <span class="ms-scheduled-pill">${shortTime}</span>
-                        <button class="ms-scheduled-edit" type="button" data-ms-edit-id="${this.escapeHtml(item.id)}">Edit</button>
-                        <button class="ms-scheduled-cancel" type="button" data-ms-cancel-id="${this.escapeHtml(item.id)}">Cancel</button>
+                        <button class="ms-scheduled-edit" type="button" data-ms-edit-id="${this.escapeHtml(item.id)}">${this.t("edit")}</button>
+                        <button class="ms-scheduled-cancel" type="button" data-ms-cancel-id="${this.escapeHtml(item.id)}" aria-label="${this.t("cancelScheduled")}" title="${this.t("cancelScheduled")}">
+                            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M10 11v6M14 11v6M9 7l1-2h4l1 2M6 7l1 13h10l1-13"></path></svg>
+                            <span data-ms-cancel-label>${this.t("cancel")}</span>
+                        </button>
                     </div>
                 </div>
             `;
         }).join("");
+    }
+
+    /**
+     * @param {Array<string>} messages
+     * @returns {string}
+     */
+    getMessagePreview(messages) {
+        const firstMessage = Array.isArray(messages) ? messages[0] : "";
+        const preview = this.cleanText(firstMessage).replace(/\s+/g, " ");
+        return preview.length > 96 ? `${preview.slice(0, 93).trimEnd()}…` : preview;
     }
 
     /**
@@ -1485,9 +2089,9 @@ module.exports = class MessageScheduler {
     getScheduleLabel(item) {
         const timeLabel = this.formatTime(item.dueAt);
         const base = this.cleanText(item.scheduleLabel);
-        if (!base) return `at ${timeLabel}`;
+        if (!base) return `${this.t("at")} ${timeLabel}`;
         if (base.includes(":")) return base;
-        return `${base} (at ${timeLabel})`;
+        return `${base} (${this.t("at")} ${timeLabel})`;
     }
 
     /**
@@ -1675,7 +2279,11 @@ module.exports = class MessageScheduler {
                 type: "delay",
                 delayMinutes,
                 dueAt: Date.now() + delayMinutes * 60000,
-                label: delayMinutes === 0 ? "now" : `in ${delayMinutes} min`
+                label: delayMinutes === 0
+                    ? this.t("now")
+                    : (this.getDiscordLocale().toLowerCase().startsWith("fr")
+                        ? `dans ${delayMinutes} min`
+                        : `in ${delayMinutes} min`)
             };
         }
 
@@ -1704,7 +2312,7 @@ module.exports = class MessageScheduler {
             type: "time",
             delayMinutes,
             dueAt: targetDate.getTime(),
-            label: `at ${cleanedValue}`
+            label: `${this.t("at")} ${cleanedValue}`
         };
     }
 
@@ -1795,6 +2403,108 @@ module.exports = class MessageScheduler {
      */
     saveQueue() {
         this.Data?.save?.(this.storageKey, this.queue);
+    }
+
+    /**
+     * Save the current unscheduled modal message as a channel draft
+     *
+     * @param {HTMLElement} modal
+     */
+    saveDraftFromModal(modal) {
+        if (this.editingScheduleId) return;
+
+        const channelId = this.activeChannelId || this.getCurrentChannelId();
+        if (!channelId) return;
+
+        const messageField = modal.querySelector("#ms-message");
+        const message = typeof messageField?.value === "string" ? messageField.value.trim() : "";
+
+        if (message) {
+            this.saveDraft(channelId, message);
+            this.UI?.showToast?.("Draft saved.", { type: "success" });
+        } else {
+            this.clearDraft(channelId);
+        }
+    }
+
+    /**
+     * Load all message drafts
+     *
+     * @returns {Object}
+     */
+    loadDrafts() {
+        const stored = this.Data?.load?.(this.draftStorageKey);
+        if (!stored || typeof stored !== "object" || Array.isArray(stored)) return {};
+
+        return Object.entries(stored).reduce((drafts, [channelId, draft]) => {
+            const normalizedChannelId = typeof channelId === "string" ? channelId.trim() : "";
+            const message = typeof draft?.message === "string" ? draft.message.trim() : "";
+            if (normalizedChannelId && message) {
+                drafts[normalizedChannelId] = {
+                    message,
+                    updatedAt: Number(draft.updatedAt) || Date.now()
+                };
+            }
+            return drafts;
+        }, {});
+    }
+
+    /**
+     * Save all message drafts
+     *
+     * @param {Object} drafts
+     */
+    saveDrafts(drafts) {
+        this.Data?.save?.(this.draftStorageKey, drafts && typeof drafts === "object" ? drafts : {});
+    }
+
+    /**
+     * Get a channel draft
+     *
+     * @param {string} channelId
+     * @returns {string}
+     */
+    getDraft(channelId) {
+        const normalizedChannelId = typeof channelId === "string" ? channelId.trim() : "";
+        if (!normalizedChannelId) return "";
+
+        const draft = this.loadDrafts()[normalizedChannelId];
+        return typeof draft?.message === "string" ? draft.message : "";
+    }
+
+    /**
+     * Save a channel draft
+     *
+     * @param {string} channelId
+     * @param {string} message
+     */
+    saveDraft(channelId, message) {
+        const normalizedChannelId = typeof channelId === "string" ? channelId.trim() : "";
+        const normalizedMessage = typeof message === "string" ? message.trim() : "";
+        if (!normalizedChannelId || !normalizedMessage) return;
+
+        const drafts = this.loadDrafts();
+        drafts[normalizedChannelId] = {
+            message: normalizedMessage,
+            updatedAt: Date.now()
+        };
+        this.saveDrafts(drafts);
+    }
+
+    /**
+     * Clear a channel draft
+     *
+     * @param {string} channelId
+     */
+    clearDraft(channelId) {
+        const normalizedChannelId = typeof channelId === "string" ? channelId.trim() : "";
+        if (!normalizedChannelId) return;
+
+        const drafts = this.loadDrafts();
+        if (!drafts[normalizedChannelId]) return;
+
+        delete drafts[normalizedChannelId];
+        this.saveDrafts(drafts);
     }
 
     /**
@@ -2100,5 +2810,99 @@ module.exports = class MessageScheduler {
             this.Logger?.warn?.("Failed to get channel label:", error);
             return `Channel ${channelId}`;
         }
+    }
+
+    /**
+     * Resolve the destination once for use in both the header and queued rows.
+     * Existing schedules only store a channel ID, so names and avatars are resolved
+     * live and stay current when a Discord user changes their profile.
+     *
+     * @param {string} channelId
+     * @returns {{kind: "dm"|"channel"|"unknown", label: string, avatarUrl: string}}
+     */
+    getScheduledDestination(channelId) {
+        if (!channelId) {
+            return { kind: "unknown", label: this.t("recipientUnknown"), avatarUrl: "" };
+        }
+
+        try {
+            const channel = this._channelStoreCache?.getChannel?.(channelId);
+            if (!channel) {
+                return { kind: "unknown", label: this.getChannelLabel(channelId), avatarUrl: "" };
+            }
+
+            const userStore = this._userStoreCache;
+            const currentUserId = userStore?.getCurrentUser?.()?.id || "";
+            const recipients = Array.isArray(channel.recipients)
+                ? channel.recipients
+                : Array.isArray(channel.rawRecipients)
+                    ? channel.rawRecipients
+                    : channel.getRecipientId?.()
+                        ? [channel.getRecipientId()]
+                        : [];
+            const users = recipients.map(recipient => {
+                const recipientId = typeof recipient === "string" ? recipient : recipient?.id;
+                if (recipientId && recipientId === currentUserId) return null;
+                return typeof recipient === "object" && recipient
+                    ? recipient
+                    : userStore?.getUser?.(recipientId) || null;
+            }).filter(Boolean);
+            const names = users.map(user =>
+                this.cleanText(user.globalName || user.displayName || user.username || "")
+            ).filter(Boolean);
+
+            if (names.length) {
+                return {
+                    kind: "dm",
+                    label: names.join(", "),
+                    avatarUrl: names.length === 1 ? this.getUserAvatarUrl(users[0]) : ""
+                };
+            }
+
+            if (channel.name) {
+                return { kind: "channel", label: `#${channel.name}`, avatarUrl: "" };
+            }
+
+            return { kind: "unknown", label: this.t("recipientUnavailable"), avatarUrl: "" };
+        } catch (error) {
+            this.Logger?.warn?.("Failed to get scheduled-message recipient:", error);
+            return { kind: "unknown", label: this.getChannelLabel(channelId), avatarUrl: "" };
+        }
+    }
+
+    /**
+     * @param {Object|null} user
+     * @returns {string}
+     */
+    getUserAvatarUrl(user) {
+        if (!user) return "";
+
+        try {
+            const directUrl = user.getAvatarURL?.();
+            if (typeof directUrl === "string" && directUrl) return directUrl;
+        } catch {
+            // Fall through to Discord's CDN shape below.
+        }
+
+        if (user.id && user.avatar) {
+            return `https://cdn.discordapp.com/avatars/${user.id}/${user.avatar}.png?size=64`;
+        }
+
+        return "";
+    }
+
+    /**
+     * @param {string} channelId
+     * @returns {string}
+     */
+    getScheduledRecipientLabel(channelId) {
+        const destination = this.getScheduledDestination(channelId);
+        if (destination.kind === "channel") {
+            return `${this.t("channel")}: ${destination.label}`;
+        }
+        if (destination.kind === "dm") {
+            return `${this.t("to")}: ${destination.label}`;
+        }
+        return destination.label;
     }
 };
